@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>ConferenceDigest バックエンド動作確認</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  body { font-family: sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  button { padding: 8px 14px; margin: 4px 4px 4px 0; }
+  textarea, input { width: 100%; box-sizing: border-box; padding: 6px; margin: 4px 0; }
+  pre { background: #f5f5f0; padding: 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
+  section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>ConferenceDigest バックエンド動作確認</h1>
+
+<section>
+  <h2>0. 設定</h2>
+  <label>Apps ScriptのデプロイURL (.../exec)</label>
+  <input id="execUrl" placeholder="https://script.google.com/a/macros/.../exec">
+  <label>Google OAuthクライアントID</label>
+  <input id="clientId" placeholder="xxxxx.apps.googleusercontent.com">
+  <button onclick="initLogin()">この設定でログインボタンを表示</button>
+  <div id="signin-button" style="margin-top:10px"></div>
+  <div id="whoami"></div>
+</section>
+
+<section>
+  <h2>1. 設定の取得・保存</h2>
+  <button onclick="run('getSettings', {})">getSettings</button>
+  <input id="provider" placeholder="provider (claude/openai/gemini)" value="claude">
+  <input id="apiKey" placeholder="APIキー">
+  <button onclick="run('setSettings', { provider: val('provider'), apiKey: val('apiKey') })">setSettings</button>
+</section>
+
+<section>
+  <h2>2. 質問する</h2>
+  <input id="question" placeholder="質問" value="この手法の限界は？">
+  <textarea id="context" placeholder="論文の要約（文脈）" rows="3">LLMを用いてコードレビューコメントを自動生成する手法。採用率58%。</textarea>
+  <button onclick="run('ask', { question: val('question'), context: val('context') })">ask</button>
+</section>
+
+<section>
+  <h2>3. メモ</h2>
+  <input id="paperId" placeholder="paperId" value="test_paper_001">
+  <textarea id="memoText" placeholder="メモ内容" rows="2">テストメモです</textarea>
+  <label><input type="checkbox" id="shared"> 研究室で共有する</label><br>
+  <button onclick="run('getMemo', { paperId: val('paperId') })">getMemo</button>
+  <button onclick="run('saveMemo', { paperId: val('paperId'), text: val('memoText'), shared: document.getElementById('shared').checked })">saveMemo</button>
+</section>
+
+<h2>結果</h2>
+<pre id="output">(まだ何も実行していません)</pre>
+
+<script>
+let idToken = null;
+
+function val(id) { return document.getElementById(id).value; }
+function execUrl() { return val('execUrl'); }
+
+function initLogin() {
+  google.accounts.id.initialize({
+    client_id: val('clientId'),
+    callback: onSignIn,
+  });
+  google.accounts.id.renderButton(
+    document.getElementById('signin-button'),
+    { theme: 'outline', size: 'large' }
+  );
+}
+
+function onSignIn(response) {
+  idToken = response.credential;
+  const payload = JSON.parse(atob(idToken.split('.')[1]));
+  document.getElementById('whoami').textContent =
+    'ログイン中: ' + payload.email + '（' + payload.name + '）';
+}
+
+async function run(action, payload) {
+  const out = document.getElementById('output');
+  if (!idToken) {
+    out.textContent = 'まだログインしていません。上の「ログインボタンを表示」→Googleログインを先に行ってください。';
+    return;
+  }
+  out.textContent = '実行中...';
+  try {
+    const res = await fetch(execUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ idToken, action, payload }),
+    });
+    const json = await res.json();
+    out.textContent = action + ':\n' + JSON.stringify(json, null, 2);
+  } catch (err) {
+    out.textContent = 'fetch自体が失敗しました: ' + err;
+  }
+}
+</script>
+</body>
+</html>
