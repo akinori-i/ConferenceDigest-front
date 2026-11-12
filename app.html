@@ -116,8 +116,21 @@
 </div>
 
 <div id="main">
-  <div id="listPane"><div style="padding:20px;color:var(--ink-soft)">読み込み中...</div></div>
+  <div id="listPane"><div style="padding:20px;color:var(--ink-soft)">右上の「Googleでログイン」から始めてください。</div></div>
   <div id="detailPane"></div>
+</div>
+
+<div id="pdfModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:60;
+  display:flex;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:12px;width:92%;max-width:900px;height:90vh;display:flex;flex-direction:column;overflow:hidden">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
+      <strong id="pdfModalTitle" style="font-size:14px"></strong>
+      <button id="pdfModalClose" style="border:none;background:transparent;font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div id="pdfModalBody" style="flex:1;display:flex">
+      <iframe id="pdfFrame" style="flex:1;border:none"></iframe>
+    </div>
+  </div>
 </div>
 
 <button id="chatFab" class="hidden">?</button>
@@ -143,41 +156,30 @@ let idToken = null;
 let papers = [];           // summaries.json + schedule.json をマージしたもの
 let selectedPaperId = null;
 
-/* ===== データ読み込み ===== */
+/* ===== データ読み込み（すべてApps Script経由。ログイン済みでないと取得できない） ===== */
 async function loadPapers() {
-  let summaries = [];
-  let schedule = { matched: [] };
+  document.getElementById('listPane').innerHTML =
+    '<div style="padding:20px;color:var(--ink-soft)">読み込み中...</div>';
   try {
-    summaries = await (await fetch('./summaries.json')).json();
+    const data = await callBackend('listPapers', {});
+    papers = data.papers || [];
   } catch (e) {
     document.getElementById('listPane').innerHTML =
-      '<div style="padding:20px;color:var(--ink-soft)">summaries.json が見つかりません。'
-      + 'summarize_papers.py の出力をこのファイルと同じフォルダに置いてください。</div>';
+      '<div style="padding:20px;color:var(--ink-soft)">論文データの取得に失敗しました: ' + escapeHtml(e.message) + '</div>';
     return;
   }
-  try {
-    schedule = await (await fetch('./schedule.json')).json();
-  } catch (e) { /* スケジュール未マッチでも一覧自体は表示する */ }
-
-  const scheduleByPaperId = {};
-  (schedule.matched || []).forEach(m => { scheduleByPaperId[m.paper_id] = m; });
-
-  papers = summaries
-    .filter(s => s.status === 'ok')
-    .map(s => {
-      const sch = scheduleByPaperId[s.paper_id] || {};
-      return {
-        ...s,
-        time: sch.time || '時刻未定',
-        room: sch.room || '',
-        speaker: sch.authors || '',
-      };
-    })
-    // 時刻が分かるものを前に、未定を後ろに
-    .sort((a, b) => (a.time === '時刻未定') - (b.time === '時刻未定'));
-
   renderList();
   if (papers.length) selectPaper(papers[0].paper_id);
+}
+
+/* 画像キャッシュ（同じ図を何度も取りに行かないように） */
+const imageDataUrlCache = {};
+async function fetchImageDataUrl(imgPath) {
+  if (imageDataUrlCache[imgPath]) return imageDataUrlCache[imgPath];
+  const data = await callBackend('getImage', { path: imgPath });
+  const url = 'data:' + data.mimeType + ';base64,' + data.data;
+  imageDataUrlCache[imgPath] = url;
+  return url;
 }
 
 /* ===== 一覧・詳細の描画 ===== */
@@ -207,10 +209,10 @@ function renderDetail() {
   const el = document.getElementById('detailPane');
   if (!p) { el.innerHTML = ''; return; }
 
-  const figs = (p.key_figures || []).map(f =>
+  const figs = (p.key_figures || []).map((f, i) =>
     '<div class="card">' +
     '<div class="label">' + escapeHtml(f.label || '') + '</div>' +
-    (f.image_path ? '<img class="fig-img" src="' + escapeAttr(f.image_path) + '">' : '') +
+    (f.image_path ? '<img class="fig-img" id="figimg-' + i + '" alt="読み込み中...">' : '') +
     '<div class="body" style="font-size:13px;color:var(--ink-soft);margin-top:6px">' + escapeHtml(f.reason || '') + '</div>' +
     '</div>'
   ).join('');
@@ -220,6 +222,8 @@ function renderDetail() {
       '<div style="font-size:13px;font-weight:700;color:var(--accent)">' + escapeHtml(p.time) + (p.room ? '・' + escapeHtml(p.room) : '') + '</div>' +
       '<h2 style="font-size:20px;margin-top:4px">' + escapeHtml(p.title) + '</h2>' +
       '<div style="font-size:13px;color:var(--ink-soft);margin-top:4px">' + escapeHtml(p.speaker) + '</div>' +
+      '<button id="viewPdfBtn" style="margin-top:10px;border:1px solid var(--border);background:#fff;' +
+        'border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">元のPDFを見る</button>' +
     '</div>' +
     section('背景', p.background) +
     section('課題', p.challenge) +
@@ -234,7 +238,41 @@ function renderDetail() {
     memoCardHtml();
 
   loadMemo();
+
+  // 図表画像を非同期取得して差し込む
+  (p.key_figures || []).forEach((f, i) => {
+    if (!f.image_path) return;
+    fetchImageDataUrl(f.image_path).then(url => {
+      const img = document.getElementById('figimg-' + i);
+      if (img) img.src = url;
+    }).catch(err => {
+      const img = document.getElementById('figimg-' + i);
+      if (img) img.alt = '画像の取得に失敗しました: ' + err.message;
+    });
+  });
+
+  document.getElementById('viewPdfBtn').onclick = () => openPdfViewer(p.paper_id, p.title);
 }
+
+/* ===== PDFビューア（モーダル） ===== */
+async function openPdfViewer(paperId, title) {
+  const modal = document.getElementById('pdfModal');
+  const frame = document.getElementById('pdfFrame');
+  const titleEl = document.getElementById('pdfModalTitle');
+  titleEl.textContent = title;
+  frame.src = '';
+  modal.classList.remove('hidden');
+  try {
+    const data = await callBackend('getPdf', { paperId });
+    frame.src = 'data:application/pdf;base64,' + data.data;
+  } catch (err) {
+    document.getElementById('pdfModalBody').textContent = 'PDFの取得に失敗しました: ' + err.message;
+  }
+}
+document.getElementById('pdfModalClose').onclick = () => {
+  document.getElementById('pdfModal').classList.add('hidden');
+  document.getElementById('pdfFrame').src = '';
+};
 
 function section(label, text) {
   return '<div class="card section"><div class="label">' + escapeHtml(label) + '</div>' +
@@ -338,14 +376,15 @@ async function sendChat() {
 function base64UrlDecode(str) {
   str = str.replace(/-/g, '+').replace(/_/g, '/');
   while (str.length % 4) str += '=';
-  // atob() returns a Latin-1 byte string; re-decode the bytes as UTF-8
+  // atob()はバイト単位の文字列しか返さないため、日本語名などの非ASCII文字は
+  // そのままJSON.parseすると文字化けする。TextDecoderで明示的にUTF-8として
+  // 解釈し直す。
   const binary = atob(str);
   const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
   return new TextDecoder('utf-8').decode(bytes);
 }
 
 window.onload = () => {
-  loadPapers();
   google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onSignIn });
   google.accounts.id.renderButton(document.getElementById('signin-button'), { theme: 'outline', size: 'medium' });
 };
@@ -360,7 +399,9 @@ async function onSignIn(response) {
   document.getElementById('signin-button').classList.add('hidden');
   document.getElementById('settingsBtn').classList.remove('hidden');
   document.getElementById('chatFab').classList.remove('hidden');
-  loadMemo();
+
+  // ログイン（本人確認）が済んでから、はじめて論文データを取得しにいく
+  loadPapers();
 
   try {
     const settings = await callBackend('getSettings', {});
