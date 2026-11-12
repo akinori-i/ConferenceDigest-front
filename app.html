@@ -41,9 +41,21 @@
   #settingsBox button.secondary { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 10px 14px; }
 
   /* ---- レイアウト ---- */
-  #main { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1200px; margin: 0 auto; padding: 20px; }
-  #listPane { flex: 1 1 320px; min-width: 280px; display: flex; flex-direction: column; gap: 10px; }
-  #detailPane { flex: 999 1 560px; min-width: 0; }
+  /* 3カラム: 一覧 | 要約 | PDF。幅が足りないときは flex-wrap で折り返す（PDFは既定で隠す） */
+  #main { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1800px; margin: 0 auto; padding: 20px; align-items: flex-start; }
+  #listPane { flex: 1 1 260px; max-width: 340px; min-width: 240px; display: flex; flex-direction: column; gap: 10px; }
+  #detailPane { flex: 1 1 380px; min-width: 0; }
+  #pdfPane { flex: 1.5 1 420px; min-width: 0; position: sticky; top: 16px; height: calc(100vh - 90px); min-height: 360px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px; display: flex;
+    flex-direction: column; overflow: hidden; }
+  #pdfPaneHeader { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  #pdfPaneTitle { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #pdfPaneBody { flex: 1; display: flex; position: relative; min-height: 0; }
+  #pdfFrame { flex: 1; border: none; width: 100%; }
+  #pdfStatus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 20px; text-align: center; font-size: 13px; color: var(--ink-soft); }
+  @media (max-width: 800px) { #listPane { max-width: none; } }
   .talk-row { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border);
     border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; text-align: left;
     width: 100%; }
@@ -118,17 +130,15 @@
 <div id="main">
   <div id="listPane"><div style="padding:20px;color:var(--ink-soft)">右上の「Googleでログイン」から始めてください。</div></div>
   <div id="detailPane"></div>
-</div>
-
-<div id="pdfModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:60;
-  display:flex;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:12px;width:92%;max-width:900px;height:90vh;display:flex;flex-direction:column;overflow:hidden">
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border)">
-      <strong id="pdfModalTitle" style="font-size:14px"></strong>
-      <button id="pdfModalClose" style="border:none;background:transparent;font-size:18px;cursor:pointer">×</button>
+  <!-- 右カラム: PDF常時表示エリア。旧 #pdfModal（ポップアップ）のヘッダ・iframe・閉じるボタンをここに転用した -->
+  <div id="pdfPane" class="hidden">
+    <div id="pdfPaneHeader">
+      <strong id="pdfPaneTitle"></strong>
+      <button id="pdfPaneClose" title="PDFを隠す" style="border:none;background:transparent;font-size:18px">×</button>
     </div>
-    <div id="pdfModalBody" style="flex:1;display:flex">
-      <iframe id="pdfFrame" style="flex:1;border:none"></iframe>
+    <div id="pdfPaneBody">
+      <iframe id="pdfFrame" class="hidden" title="論文PDF"></iframe>
+      <div id="pdfStatus">発表を選択するとPDFが表示されます</div>
     </div>
   </div>
 </div>
@@ -202,6 +212,9 @@ function selectPaper(paperId) {
   selectedPaperId = paperId;
   renderList();
   renderDetail();
+  // 発表を選択するたびに、右カラムへ該当PDFを読み込む（取得済みならキャッシュから即表示）
+  const p = papers.find(x => x.paper_id === paperId);
+  if (p) openPdfViewer(p.paper_id, p.title);
 }
 
 function renderDetail() {
@@ -223,7 +236,7 @@ function renderDetail() {
       '<h2 style="font-size:20px;margin-top:4px">' + escapeHtml(p.title) + '</h2>' +
       '<div style="font-size:13px;color:var(--ink-soft);margin-top:4px">' + escapeHtml(p.speaker) + '</div>' +
       '<button id="viewPdfBtn" style="margin-top:10px;border:1px solid var(--border);background:#fff;' +
-        'border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">元のPDFを見る</button>' +
+        'border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer">' + (pdfVisible ? 'PDFを隠す' : 'PDFを表示') + '</button>' +
     '</div>' +
     section('背景', p.background) +
     section('課題', p.challenge) +
@@ -251,28 +264,68 @@ function renderDetail() {
     });
   });
 
-  document.getElementById('viewPdfBtn').onclick = () => openPdfViewer(p.paper_id, p.title);
+  // 「PDFを表示/隠す」トグル（右カラムの表示切替。狭い画面では既定で隠れている）
+  document.getElementById('viewPdfBtn').onclick = () => setPdfVisible(!pdfVisible);
 }
 
-/* ===== PDFビューア（モーダル） ===== */
+/* ===== PDFビューア（右カラム。旧モーダルを転用） ===== */
+// 狭い画面（モバイル等）では既定で隠し、無駄なPDF取得もしない
+let pdfVisible = window.matchMedia('(min-width: 1200px)').matches;
+const pdfBlobUrlCache = {};   // paperId -> blob: URL（同じ論文のPDFを何度も取得し直さない）
+const pdfPending = {};        // paperId -> 取得中のPromise（同時の重複リクエスト防止）
+
+function base64ToBlobUrl(b64, mime) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes], { type: mime }));
+}
+
+function fetchPdfBlobUrl(paperId) {
+  if (pdfBlobUrlCache[paperId]) return Promise.resolve(pdfBlobUrlCache[paperId]);
+  if (pdfPending[paperId]) return pdfPending[paperId];
+  pdfPending[paperId] = callBackend('getPdf', { paperId })
+    .then(data => (pdfBlobUrlCache[paperId] = base64ToBlobUrl(data.data, 'application/pdf')))
+    .finally(() => { delete pdfPending[paperId]; });
+  return pdfPending[paperId];
+}
+
+function showPdfStatus(msg) {
+  document.getElementById('pdfFrame').classList.add('hidden');
+  const st = document.getElementById('pdfStatus');
+  st.textContent = msg;
+  st.classList.remove('hidden');
+}
+
 async function openPdfViewer(paperId, title) {
-  const modal = document.getElementById('pdfModal');
+  if (!pdfVisible) return;
   const frame = document.getElementById('pdfFrame');
-  const titleEl = document.getElementById('pdfModalTitle');
-  titleEl.textContent = title;
-  frame.src = '';
-  modal.classList.remove('hidden');
+  document.getElementById('pdfPaneTitle').textContent = title;
+  showPdfStatus('PDFを読み込み中...');
   try {
-    const data = await callBackend('getPdf', { paperId });
-    frame.src = 'data:application/pdf;base64,' + data.data;
+    const url = await fetchPdfBlobUrl(paperId);
+    // 取得中に別の発表へ切り替えられた／PDFが隠された場合は、古い結果を描画しない
+    if (paperId !== selectedPaperId || !pdfVisible) return;
+    frame.src = url + '#view=FitH';
+    frame.classList.remove('hidden');
+    document.getElementById('pdfStatus').classList.add('hidden');
   } catch (err) {
-    document.getElementById('pdfModalBody').textContent = 'PDFの取得に失敗しました: ' + err.message;
+    if (paperId === selectedPaperId) showPdfStatus('PDFの取得に失敗しました: ' + err.message);
   }
 }
-document.getElementById('pdfModalClose').onclick = () => {
-  document.getElementById('pdfModal').classList.add('hidden');
-  document.getElementById('pdfFrame').src = '';
-};
+
+function setPdfVisible(visible) {
+  pdfVisible = visible;
+  document.getElementById('pdfPane').classList.toggle('hidden', !visible);
+  const btn = document.getElementById('viewPdfBtn');
+  if (btn) btn.textContent = visible ? 'PDFを隠す' : 'PDFを表示';
+  if (!visible) { document.getElementById('pdfFrame').src = 'about:blank'; return; }
+  const p = papers.find(x => x.paper_id === selectedPaperId);
+  if (p) openPdfViewer(p.paper_id, p.title);
+}
+// 旧 #pdfModalClose の閉じるボタンは、右カラムの「×（PDFを隠す）」に転用
+document.getElementById('pdfPaneClose').onclick = () => setPdfVisible(false);
+document.getElementById('pdfPane').classList.toggle('hidden', !pdfVisible);
 
 function section(label, text) {
   return '<div class="card section"><div class="label">' + escapeHtml(label) + '</div>' +
