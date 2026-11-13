@@ -43,7 +43,11 @@
   /* ---- レイアウト ---- */
   /* 3カラム: 一覧 | 要約 | PDF。幅が足りないときは flex-wrap で折り返す（PDFは既定で隠す） */
   #main { display: flex; flex-wrap: wrap; gap: 20px; max-width: 1800px; margin: 0 auto; padding: 20px; align-items: flex-start; }
-  #listPane { flex: 1 1 260px; max-width: 340px; min-width: 240px; display: flex; flex-direction: column; gap: 10px; }
+  /* 一覧は独立スクロール＋sticky（PDFパネルと同じ top:16px / 高さ計算）。トップバーはstickyではないので、その分のオフセットは不要 */
+  #listPane { flex: 1 1 260px; max-width: 340px; min-width: 240px; display: flex; flex-direction: column; gap: 10px;
+    position: sticky; top: 16px; max-height: calc(100vh - 90px); overflow-y: auto; overscroll-behavior: contain; }
+  /* スクロールしても「現在の発表へ」ボタンは一覧の上端に残す */
+  #jumpToNow { position: sticky; top: 0; z-index: 2; background: var(--bg); padding-bottom: 4px; }
   #detailPane { flex: 1 1 380px; min-width: 0; }
   #pdfPane { flex: 1.5 1 420px; min-width: 0; position: sticky; top: 16px; height: calc(100vh - 90px); min-height: 360px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 14px; display: flex;
@@ -56,6 +60,11 @@
   #pdfStatus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     padding: 20px; text-align: center; font-size: 13px; color: var(--ink-soft); }
   @media (max-width: 800px) { #listPane { max-width: none; } }
+  /* 1列に折り返す幅では通常フロー（sticky・高さ固定・独立スクロールを解除）。一覧→要約の順にページ全体でスクロールする */
+  /* 3列が収まらない幅でPDFを表示すると、PDFが下の行に折り返す。stickyの一覧がPDFに重なるため、その間だけ通常フローに戻す */
+  @media (max-width: 1139px) { #main:has(#pdfPane:not(.hidden)) #listPane { position: static; max-height: none; overflow: visible; }
+    #main:has(#pdfPane:not(.hidden)) #jumpToNow { position: static; } }
+  @media (max-width: 700px) { #listPane { position: static; max-height: none; overflow: visible; } #jumpToNow { position: static; } }
   .talk-row { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border);
     border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; text-align: left;
     width: 100%; }
@@ -293,8 +302,16 @@ function showJumpMessage(text) {
 function jumpToPaper(paperId) {
   selectPaper(paperId);
   // 一覧が長いと選択行が画面外になるため、見える位置までスクロールする
-  const row = document.querySelector('#listPane .talk-row.selected');
-  if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const list = document.getElementById('listPane');
+  const row = list.querySelector('.talk-row.selected');
+  if (!row) return;
+  if (list.scrollHeight > list.clientHeight + 1) {
+    // 一覧が独立スクロールのときは、一覧の中だけをスクロールする（ページ全体は動かさない）
+    const lr = list.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    list.scrollTo({ top: list.scrollTop + (rr.top - lr.top) - list.clientHeight / 2 + rr.height / 2, behavior: 'smooth' });
+  } else {
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });   // 狭い画面（通常フロー）
+  }
 }
 
 // ボタン群の描画。該当セッションが1つ以下 → 従来どおり「現在の発表へ」1つ。
