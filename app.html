@@ -64,6 +64,12 @@
   .talk-row .title { font-size: 14.5px; font-weight: 700; }
   .talk-row .speaker { font-size: 12px; color: var(--ink-soft); }
 
+  /* 「現在の発表へ」ボタンとその一時メッセージ */
+  .jump-btn { width: 100%; border: 1px solid var(--accent-border); background: var(--accent-bg); color: var(--accent);
+    border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 700; }
+  .jump-btn:hover { background: #E4F0EC; }
+  .jump-msg { font-size: 12px; color: var(--warn-ink); margin-top: -4px; padding: 0 4px; }
+
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px;
     margin-bottom: 14px; }
   .card.section { background: var(--accent-bg); border-color: var(--accent-border); }
@@ -208,7 +214,10 @@ async function fetchImageDataUrl(imgPath) {
 /* ===== 一覧・詳細の描画 ===== */
 function renderList() {
   const el = document.getElementById('listPane');
-  el.innerHTML = '';
+  // 一覧の先頭に「現在の発表へ」ボタン（一覧を作り直すたびに一緒に作り直す）
+  el.innerHTML = '<button id="jumpToNowBtn" class="jump-btn">現在の発表へ</button>' +
+    '<div id="jumpToNowMsg" class="jump-msg hidden"></div>';
+  document.getElementById('jumpToNowBtn').onclick = jumpToNow;
   papers.forEach(p => {
     const btn = document.createElement('button');
     btn.className = 'talk-row' + (p.paper_id === selectedPaperId ? ' selected' : '');
@@ -219,6 +228,53 @@ function renderList() {
     btn.onclick = () => selectPaper(p.paper_id);
     el.appendChild(btn);
   });
+}
+
+/* ===== 「現在の発表へ」 ===== */
+// "13:40-14:00" 形式を、今日の日付と組み合わせた {start, end}(Date) にする。
+// 「時刻未定」など解釈できない値や、終了が開始より前（日付またぎ）の値は null（判定対象外）。
+const TIME_RANGE_RE = /(\d{1,2}):(\d{2})\s*[-‐–—−~～〜ー]\s*(\d{1,2}):(\d{2})/;
+function parseTimeRange(str) {
+  const m = TIME_RANGE_RE.exec(String(str || ''));
+  if (!m) return null;
+  const start = new Date(); start.setHours(+m[1], +m[2], 0, 0);
+  const end = new Date();   end.setHours(+m[3], +m[4], 0, 0);
+  return end > start ? { start, end } : null;
+}
+
+function findCurrentPaper(now) {
+  const items = papers.map(p => ({ p, r: parseTimeRange(p.time) })).filter(x => x.r);
+  if (!items.length) return null;
+  // a. 開始〜終了の範囲内（終了時刻ちょうどは次の発表の開始とみなし、範囲外）。並行セッションは一覧順で先のもの
+  const current = items.find(x => x.r.start <= now && now < x.r.end);
+  if (current) return current.p;
+  // b. 開始時刻が最も近い未来の発表
+  const future = items.filter(x => x.r.start > now);
+  if (future.length) return future.reduce((a, b) => (b.r.start < a.r.start ? b : a)).p;
+  // c. 全部終わっている → 最後に終了した発表
+  return items.reduce((a, b) => (b.r.end > a.r.end ? b : a)).p;
+}
+
+let jumpMsgTimer = null;
+function showJumpMessage(text) {
+  const el = document.getElementById('jumpToNowMsg');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('hidden');
+  clearTimeout(jumpMsgTimer);
+  jumpMsgTimer = setTimeout(() => {
+    const e = document.getElementById('jumpToNowMsg');
+    if (e) e.classList.add('hidden');
+  }, 2500);
+}
+
+function jumpToNow() {
+  const target = findCurrentPaper(new Date());
+  if (!target) { showJumpMessage('現在時刻に該当する発表が見つかりませんでした'); return; }
+  selectPaper(target.paper_id);
+  // 一覧が長いと選択行が画面外になるため、見える位置までスクロールする
+  const row = document.querySelector('#listPane .talk-row.selected');
+  if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
 function selectPaper(paperId) {
