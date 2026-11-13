@@ -77,6 +77,16 @@
   .avatar { flex: 0 0 auto; width: 22px; height: 22px; border-radius: 999px; background: var(--accent);
     color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 
+  /* ---- 新着コメント通知（画面右上。クリック or ×で閉じるまで残り、縦に積む） ---- */
+  #notificationArea { position: fixed; top: 72px; right: 16px; width: min(340px, calc(100vw - 32px)); z-index: 45;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+  .notif { pointer-events: auto; display: flex; align-items: flex-start; gap: 8px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 10px 12px; box-shadow: 0 6px 16px rgba(0,0,0,.14); }
+  .notif:hover { background: var(--accent-bg); }
+  .notif-text { flex: 1; font-size: 13px; line-height: 1.5; }
+  .notif-close { border: none; background: transparent; font-size: 16px; line-height: 1; color: var(--ink-soft); padding: 2px 4px; }
+
   /* ---- 質問フローティングボタン ---- */
   #chatFab { position: fixed; left: 24px; bottom: 24px; width: 52px; height: 52px; border-radius: 999px;
     border: none; background: var(--accent); color: #fff; font-size: 20px; box-shadow: 0 6px 16px rgba(0,0,0,.18); z-index: 40; }
@@ -133,8 +143,9 @@
   <!-- 右カラム: PDF常時表示エリア。旧 #pdfModal（ポップアップ）のヘッダ・iframe・閉じるボタンをここに転用した -->
   <div id="pdfPane" class="hidden">
     <div id="pdfPaneHeader">
-      <strong id="pdfPaneTitle"></strong>
+      <!-- 右上の通知（#notificationArea）と重ならないよう、×は左側に置く -->
       <button id="pdfPaneClose" title="PDFを隠す" style="border:none;background:transparent;font-size:18px">×</button>
+      <strong id="pdfPaneTitle" style="flex:1"></strong>
     </div>
     <div id="pdfPaneBody">
       <iframe id="pdfFrame" class="hidden" title="論文PDF"></iframe>
@@ -142,6 +153,8 @@
     </div>
   </div>
 </div>
+
+<div id="notificationArea" aria-live="polite"></div>
 
 <button id="chatFab" class="hidden">?</button>
 <div id="chatPanel" class="hidden">
@@ -212,6 +225,7 @@ function selectPaper(paperId) {
   selectedPaperId = paperId;
   renderList();
   renderDetail();
+  dismissNotification(paperId);   // 見に行った発表の通知は不要になる
   // 発表を選択するたびに、右カラムへ該当PDFを読み込む（取得済みならキャッシュから即表示）
   const p = papers.find(x => x.paper_id === paperId);
   if (p) openPdfViewer(p.paper_id, p.title);
@@ -394,6 +408,90 @@ document.addEventListener('click', async (e) => {
   }
 });
 
+/* ===== 他の発表への新着コメント通知 ===== */
+const MEMO_POLL_MS = 30000;
+let memoSince = null;             // 前回チェック時刻。2回目以降はサーバーが返した checkedAt を使う
+let memoPollTimer = null;
+let memoPollInFlight = false;     // 応答待ち中の二重呼び出し防止
+const notifications = new Map();  // paperId -> { paperId, displayName, count }（同じ発表は1通知にまとめる）
+
+function startMemoPolling() {
+  if (!memoSince) memoSince = new Date().toISOString();   // 初回は「ログインした時刻」
+  stopMemoPolling();
+  if (document.hidden) return;                           // 非表示中は開始しない（再表示で再開）
+  memoPollTimer = setInterval(pollMemoUpdates, MEMO_POLL_MS);
+}
+function stopMemoPolling() {
+  if (memoPollTimer) clearInterval(memoPollTimer);
+  memoPollTimer = null;
+}
+
+async function pollMemoUpdates() {
+  if (!idToken || document.hidden || memoPollInFlight) return;
+  memoPollInFlight = true;
+  try {
+    const data = await callBackend('listMemoUpdates', { since: memoSince });
+    // 取りこぼし・重複を防ぐため、ローカルのDate.now()ではなくサーバーのcheckedAtで進める
+    if (data.checkedAt) memoSince = data.checkedAt;
+    handleMemoUpdates(data.updates || []);
+  } catch (e) { /* 通信失敗時はsinceを進めず、次回の呼び出しで取り直す */ }
+  finally { memoPollInFlight = false; }
+}
+
+function handleMemoUpdates(updates) {
+  let changed = false;
+  updates.forEach(u => {
+    if (!u.paperId || u.paperId === selectedPaperId) return;   // 今見ている発表には通知しない
+    const n = notifications.get(u.paperId) || { paperId: u.paperId, displayName: '', count: 0 };
+    n.displayName = u.displayName || n.displayName;
+    n.count += 1;
+    notifications.set(u.paperId, n);
+    changed = true;
+  });
+  if (changed) renderNotifications();
+}
+
+function renderNotifications() {
+  const el = document.getElementById('notificationArea');
+  el.innerHTML = '';
+  notifications.forEach(n => {
+    const p = papers.find(x => x.paper_id === n.paperId);
+    const text = (n.displayName || 'だれか') + 'さんが「' + (p ? p.title : n.paperId) + '」にコメントしました' +
+      (n.count > 1 ? ' 他' + (n.count - 1) + '件' : '');
+    const item = document.createElement('div');
+    item.className = 'notif';
+    item.dataset.paperId = n.paperId;
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    item.innerHTML = '<div class="notif-text">' + escapeHtml(text) + '</div>' +
+      '<button class="notif-close" aria-label="通知を閉じる">×</button>';
+    el.appendChild(item);
+  });
+}
+
+function dismissNotification(paperId) {
+  if (notifications.delete(paperId)) renderNotifications();
+}
+
+document.getElementById('notificationArea').addEventListener('click', (e) => {
+  const item = e.target.closest('.notif');
+  if (!item) return;
+  if (e.target.closest('.notif-close')) { dismissNotification(item.dataset.paperId); return; }
+  selectPaper(item.dataset.paperId);   // 該当発表へジャンプ（selectPaper内で通知も消える）
+});
+document.getElementById('notificationArea').addEventListener('keydown', (e) => {
+  const item = e.target.closest('.notif');
+  if (item && e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectPaper(item.dataset.paperId); }
+});
+
+// タブが見えない間はポーリングを止め、戻ってきたら即1回確認してから再開する
+document.addEventListener('visibilitychange', () => {
+  if (!idToken) return;
+  if (document.hidden) { stopMemoPolling(); return; }
+  pollMemoUpdates();
+  startMemoPolling();
+});
+
 /* ===== 質問パネル ===== */
 document.getElementById('chatFab').onclick = () => {
   document.getElementById('chatPanel').classList.toggle('hidden');
@@ -470,6 +568,7 @@ async function onSignIn(response) {
 
   // ログイン（本人確認）が済んでから、はじめて論文データを取得しにいく
   loadPapers();
+  startMemoPolling();   // 他の発表への新着コメントを30秒おきに確認
 
   try {
     const settings = await callBackend('getSettings', {});
