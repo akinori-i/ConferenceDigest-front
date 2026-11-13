@@ -546,10 +546,16 @@ async function loadComments() {
 document.addEventListener('click', async (e) => {
   const id = e.target && e.target.id;
   if (id === 'memoSaveBtn') {
-    const text = document.getElementById('memoText').value;
+    const btn = e.target, text = document.getElementById('memoText').value;
+    if (btn.disabled) return;
+    btn.disabled = true; btn.textContent = '保存中…';   // 応答待ちが見えるようにする
+    let label = '保存';
     try {
       await callBackend('saveMemo', { paperId: selectedPaperId, text });
-    } catch (err) { alert('メモの保存に失敗しました: ' + err.message); }
+      label = '保存しました ✓';
+    } catch (err) { label = '保存失敗'; alert('メモの保存に失敗しました: ' + err.message); }
+    btn.disabled = false; btn.textContent = label;
+    if (label !== '保存') setTimeout(() => { if (btn.isConnected && !btn.disabled) btn.textContent = '保存'; }, 2000);
   } else if (id === 'commentPostBtn') {
     const btn = e.target, input = document.getElementById('commentText');
     const text = input.value.trim(), pid = selectedPaperId;
