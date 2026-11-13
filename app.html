@@ -68,6 +68,9 @@
   .jump-btn { width: 100%; border: 1px solid var(--accent-border); background: var(--accent-bg); color: var(--accent);
     border-radius: 8px; padding: 8px 12px; font-size: 13px; font-weight: 700; }
   .jump-btn:hover { background: #E4F0EC; }
+  #jumpToNow { display: flex; flex-direction: column; gap: 6px; }
+  .jump-btn.sub { text-align: left; font-weight: 500; line-height: 1.4; }
+  .jump-caption { font-size: 12px; font-weight: 700; color: var(--ink-soft); padding: 0 4px; }
   .jump-msg { font-size: 12px; color: var(--warn-ink); margin-top: -4px; padding: 0 4px; }
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px;
@@ -215,9 +218,8 @@ async function fetchImageDataUrl(imgPath) {
 function renderList() {
   const el = document.getElementById('listPane');
   // 一覧の先頭に「現在の発表へ」ボタン（一覧を作り直すたびに一緒に作り直す）
-  el.innerHTML = '<button id="jumpToNowBtn" class="jump-btn">現在の発表へ</button>' +
-    '<div id="jumpToNowMsg" class="jump-msg hidden"></div>';
-  document.getElementById('jumpToNowBtn').onclick = jumpToNow;
+  el.innerHTML = '<div id="jumpToNow"></div><div id="jumpToNowMsg" class="jump-msg hidden"></div>';
+  renderJumpButtons(true);
   papers.forEach(p => {
     const btn = document.createElement('button');
     btn.className = 'talk-row' + (p.paper_id === selectedPaperId ? ' selected' : '');
@@ -233,7 +235,8 @@ function renderList() {
 /* ===== 「現在の発表へ」 ===== */
 // "13:40-14:00" 形式を、今日の日付と組み合わせた {start, end}(Date) にする。
 // 「時刻未定」など解釈できない値や、終了が開始より前（日付またぎ）の値は null（判定対象外）。
-const TIME_RANGE_RE = /(\d{1,2}):(\d{2})\s*[-‐–—−~～〜ー]\s*(\d{1,2}):(\d{2})/;
+// 区切りは「ハイフン類・波ダッシュ類の1文字以上の連続」（"10:20-11:40" / "10:20 -- 11:40" / "10:20〜11:40" など）
+const TIME_RANGE_RE = /(\d{1,2}):(\d{2})\s*[-‐–—−~～〜ー]+\s*(\d{1,2}):(\d{2})/;
 function parseTimeRange(str) {
   const m = TIME_RANGE_RE.exec(String(str || ''));
   if (!m) return null;
@@ -242,17 +245,33 @@ function parseTimeRange(str) {
   return end > start ? { start, end } : null;
 }
 
-function findCurrentPaper(now) {
+// 該当する発表を、並行セッションも含めてすべて返す（優先順位 a→b→c は従来どおり）
+function findCurrentPapers(now) {
   const items = papers.map(p => ({ p, r: parseTimeRange(p.time) })).filter(x => x.r);
-  if (!items.length) return null;
-  // a. 開始〜終了の範囲内（終了時刻ちょうどは次の発表の開始とみなし、範囲外）。並行セッションは一覧順で先のもの
-  const current = items.find(x => x.r.start <= now && now < x.r.end);
-  if (current) return current.p;
-  // b. 開始時刻が最も近い未来の発表
+  if (!items.length) return [];
+  // a. 開始〜終了の範囲内（終了時刻ちょうどは次の発表の開始とみなし、範囲外）
+  const current = items.filter(x => x.r.start <= now && now < x.r.end);
+  if (current.length) return current.map(x => x.p);
+  // b. 開始時刻が最も近い未来の発表（同じ開始時刻のものはすべて）
   const future = items.filter(x => x.r.start > now);
-  if (future.length) return future.reduce((a, b) => (b.r.start < a.r.start ? b : a)).p;
-  // c. 全部終わっている → 最後に終了した発表
-  return items.reduce((a, b) => (b.r.end > a.r.end ? b : a)).p;
+  if (future.length) {
+    const t = Math.min(...future.map(x => x.r.start.getTime()));
+    return future.filter(x => x.r.start.getTime() === t).map(x => x.p);
+  }
+  // c. 全部終わっている → 最後に終了した発表（同じ終了時刻のものはすべて）
+  const t = Math.max(...items.map(x => x.r.end.getTime()));
+  return items.filter(x => x.r.end.getTime() === t).map(x => x.p);
+}
+
+// 該当する発表をセッションごとにまとめる。1セッション=1ボタン、遷移先はそのセッションの最初の発表。
+// セッション名(session_title)を優先し、無ければ room、それも無ければ時刻文字列で同一視する。
+function sessionGroups(now) {
+  const groups = new Map();
+  findCurrentPapers(now).forEach(p => {
+    const key = p.session_title || p.room || ('time:' + p.time);
+    if (!groups.has(key)) groups.set(key, { label: p.session_title || p.room || p.title, paper: p });
+  });
+  return [...groups.values()];
 }
 
 let jumpMsgTimer = null;
@@ -268,14 +287,54 @@ function showJumpMessage(text) {
   }, 2500);
 }
 
-function jumpToNow() {
-  const target = findCurrentPaper(new Date());
-  if (!target) { showJumpMessage('現在時刻に該当する発表が見つかりませんでした'); return; }
-  selectPaper(target.paper_id);
+function jumpToPaper(paperId) {
+  selectPaper(paperId);
   // 一覧が長いと選択行が画面外になるため、見える位置までスクロールする
   const row = document.querySelector('#listPane .talk-row.selected');
   if (row) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
+
+// ボタン群の描画。該当セッションが1つ以下 → 従来どおり「現在の発表へ」1つ。
+// 並行セッションで2つ以上 → セッション名のボタンを並べる。表示内容が変わらない間は作り直さない。
+let jumpSignature = null;
+function renderJumpButtons(force) {
+  const box = document.getElementById('jumpToNow');
+  if (!box) return;
+  const groups = sessionGroups(new Date());
+  const sig = groups.map(g => g.label + '\u0000' + g.paper.paper_id).join('\u0001');
+  if (!force && sig === jumpSignature) return;
+  jumpSignature = sig;
+  box.innerHTML = '';
+  if (groups.length <= 1) {
+    const btn = document.createElement('button');
+    btn.id = 'jumpToNowBtn';
+    btn.className = 'jump-btn';
+    btn.textContent = '現在の発表へ';
+    btn.onclick = () => {   // 押した時点の時刻で判定し直す
+      const g = sessionGroups(new Date());
+      if (!g.length) { showJumpMessage('現在時刻に該当する発表が見つかりませんでした'); return; }
+      jumpToPaper(g[0].paper.paper_id);
+    };
+    box.appendChild(btn);
+    return;
+  }
+  const cap = document.createElement('div');
+  cap.className = 'jump-caption';
+  cap.textContent = '現在の発表へ（並行セッション）';
+  box.appendChild(cap);
+  groups.forEach((g, i) => {
+    const btn = document.createElement('button');
+    btn.id = 'jumpToNowBtn-' + (i + 1);
+    btn.className = 'jump-btn sub';
+    btn.textContent = g.label;
+    btn.title = g.label;
+    btn.onclick = () => jumpToPaper(g.paper.paper_id);
+    box.appendChild(btn);
+  });
+}
+// 時間が進むと該当セッションが変わるため、1分ごと／タブ再表示時に表示を更新する
+setInterval(() => { if (!document.hidden && papers.length) renderJumpButtons(false); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) renderJumpButtons(false); });
 
 function selectPaper(paperId) {
   selectedPaperId = paperId;
