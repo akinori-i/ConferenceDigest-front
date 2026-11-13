@@ -402,9 +402,24 @@ document.getElementById('chatCloseBtn').onclick = () => {
   document.getElementById('chatPanel').classList.add('hidden');
 };
 document.getElementById('chatSendBtn').onclick = sendChat;
-document.getElementById('chatInput').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') sendChat();
+// 送信は Ctrl+Enter（Win/Linux）/ Cmd+Enter（Mac）のみ。Enter単体は、日本語IMEの変換確定と
+// 区別できない場面があるため送信しない（誤送信防止）。
+const chatInputEl = document.getElementById('chatInput');
+let chatComposing = false;   // IME変換中（compositionstart〜compositionend）
+chatInputEl.addEventListener('compositionstart', () => { chatComposing = true; });
+chatInputEl.addEventListener('compositionend', () => { chatComposing = false; });
+chatInputEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  // IME変換中のEnter。Safariは確定のkeydownより先にcompositionendが来るため、keyCode 229も見る
+  if (e.isComposing || chatComposing || e.keyCode === 229) return;
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    sendChat();
+  }
 });
+// OSに応じた送信キーのヒントをplaceholderに出す（厳密な判定は不要）
+const isMacLike = /Mac|iPhone|iPad/i.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '');
+chatInputEl.placeholder = '質問を入力... (' + (isMacLike ? 'Cmd' : 'Ctrl') + '+Enterで送信)';
 
 async function sendChat() {
   const input = document.getElementById('chatInput');
