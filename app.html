@@ -60,11 +60,19 @@
   #pdfStatus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     padding: 20px; text-align: center; font-size: 13px; color: var(--ink-soft); }
   @media (max-width: 800px) { #listPane { max-width: none; } }
-  /* 1列に折り返す幅では通常フロー（sticky・高さ固定・独立スクロールを解除）。一覧→要約の順にページ全体でスクロールする */
-  /* 3列が収まらない幅でPDFを表示すると、PDFが下の行に折り返す。stickyの一覧がPDFに重なるため、その間だけ通常フローに戻す */
-  @media (max-width: 1139px) { #main:has(#pdfPane:not(.hidden)) #listPane { position: static; max-height: none; overflow: visible; }
+  /* 3列にしない幅（1024px未満）でPDFを表示すると、PDFが下の行に折り返す。stickyの一覧がPDFに重なるため、その間だけ通常フローに戻す */
+  @media (max-width: 1023px) { #main:has(#pdfPane:not(.hidden)) #listPane { position: static; max-height: none; overflow: visible; }
     #main:has(#pdfPane:not(.hidden)) #jumpToNow { position: static; } }
+  /* 1列に折り返す幅では通常フロー（sticky・高さ固定・独立スクロールを解除）。一覧→要約の順にページ全体でスクロールする */
   @media (max-width: 700px) { #listPane { position: static; max-height: none; overflow: visible; } #jumpToNow { position: static; } }
+  /* 幅1024px以上（iPad横向きを含む）は常に3列（一覧|要約|PDF）。折り返さず、各列が縮んで収まる。
+     1024px未満は従来どおりflex-wrapで折り返す（768pxは一覧+要約の2列、700px以下は1列） */
+  @media (min-width: 1024px) {
+    #main { flex-wrap: nowrap; }
+    #listPane { flex: 0 1 clamp(240px, 24vw, 340px); min-width: 220px; }
+    #detailPane { flex: 1 1 0; min-width: 300px; }
+    #pdfPane { flex: 1.15 1 0; min-width: 320px; }
+  }
   .talk-row { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border);
     border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; text-align: left;
     width: 100%; }
@@ -420,7 +428,7 @@ function renderDetail() {
 
 /* ===== PDFビューア（右カラム。旧モーダルを転用） ===== */
 // 狭い画面（モバイル等）では既定で隠し、無駄なPDF取得もしない
-let pdfVisible = window.matchMedia('(min-width: 1200px)').matches;
+let pdfVisible = window.matchMedia('(min-width: 1024px)').matches;
 const pdfBlobUrlCache = {};   // paperId -> blob: URL（同じ論文のPDFを何度も取得し直さない）
 const pdfPending = {};        // paperId -> 取得中のPromise（同時の重複リクエスト防止）
 
