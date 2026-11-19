@@ -27,6 +27,21 @@
   #settingsBtn { border: 1px solid var(--border); background: var(--surface); border-radius: 8px;
     padding: 6px 12px; font-size: 13px; }
 
+  /* ---- 学会名ボタン（トップバー）と学会選択パネル ---- */
+  #currentConference { border: 1px solid var(--accent-border); background: var(--accent-bg); color: var(--accent);
+    border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 700; max-width: 50vw;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #currentConference:disabled { cursor: default; }
+  #conferencePanel { position: fixed; inset: 0; background: rgba(0,0,0,.3); display: flex;
+    align-items: center; justify-content: center; z-index: 55; }
+  #conferenceBox { background: var(--surface); border-radius: 16px; padding: 24px; width: 90%; max-width: 360px;
+    display: flex; flex-direction: column; gap: 12px; }
+  #conferenceBox select { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
+  #conferenceBox .row { display: flex; gap: 8px; margin-top: 8px; }
+  #conferenceBox button.primary { flex: 1; background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 10px 0; font-weight: 700; }
+  #conferenceBox button.secondary { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 10px 14px; }
+
   /* ---- 設定パネル ---- */
   #settingsPanel { position: fixed; inset: 0; background: rgba(0,0,0,.3); display: flex;
     align-items: center; justify-content: center; z-index: 50; }
@@ -135,11 +150,25 @@
 <body>
 
 <div id="topbar">
-  <h1>ConferenceDigest</h1>
+  <div style="display:flex;align-items:center;gap:12px;min-width:0">
+    <h1>ConferenceDigest</h1>
+    <button id="currentConference" class="hidden" title="学会を切り替える"></button>
+  </div>
   <div id="authArea">
     <span id="whoami"></span>
     <div id="signin-button"></div>
     <button id="settingsBtn" class="hidden">設定</button>
+  </div>
+</div>
+
+<div id="conferencePanel" class="hidden">
+  <div id="conferenceBox">
+    <h3>学会を選択</h3>
+    <select id="conferenceSelect"></select>
+    <div class="row">
+      <button class="secondary hidden" id="conferenceCloseBtn">閉じる</button>
+      <button class="primary" id="conferenceOpenBtn">開く</button>
+    </div>
   </div>
 </div>
 
@@ -205,32 +234,151 @@ const GOOGLE_CLIENT_ID = '10331089421-1k6rbns3hvm01sc2vi7nreeg7i9ug766.apps.goog
 
 /* ===== 状態 ===== */
 let idToken = null;
-let papers = [];           // summaries.json + schedule.json をマージしたもの
+let papers = [];           // 選択中の学会の summaries.json + schedule.json をマージしたもの
 let selectedPaperId = null;
+let conferences = [];      // [{ id, name }]。listConferences の結果（正規化済み）
+let currentConferenceId = null;
+const CONFERENCE_STORAGE_KEY = 'conferenceDigest.conferenceId';
+
+/* ===== 学会の選択 ===== */
+function readSavedConference() {
+  try { return localStorage.getItem(CONFERENCE_STORAGE_KEY); } catch (e) { return null; }
+}
+function saveConference(id) {
+  try { localStorage.setItem(CONFERENCE_STORAGE_KEY, id); } catch (e) { /* 保存できなくても動作に影響しない */ }
+}
+function conferenceName(id) {
+  const c = conferences.find(x => x.id === id);
+  return c ? c.name : id;
+}
+// listConferences は { id, name, ... } の配列を返す（conferences.json が無いときは name = id）。
+// 念のため、文字列だけの要素・name欠落・id重複・idが無い要素にも耐えるよう正規化する。
+function normalizeConferences(raw) {
+  const out = [], seen = new Set();
+  (Array.isArray(raw) ? raw : []).forEach(c => {
+    const id = typeof c === 'string' ? c : (c && c.id);
+    if (!id || typeof id !== 'string' || seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, name: (c && typeof c === 'object' && c.name) ? String(c.name) : id });
+  });
+  return out;
+}
+function setListMessage(text) {
+  const el = document.getElementById('listPane');
+  el.innerHTML = '';
+  const d = document.createElement('div');
+  d.style.cssText = 'padding:20px;color:var(--ink-soft)';
+  d.textContent = text;
+  el.appendChild(d);
+}
+
+async function loadConferences() {
+  setListMessage('学会の一覧を読み込み中...');
+  let data;
+  try {
+    data = await callBackend('listConferences', {});
+  } catch (e) {
+    setListMessage('学会の一覧の取得に失敗しました: ' + e.message);
+    return;
+  }
+  conferences = normalizeConferences(data && data.conferences);
+  if (!conferences.length) { setListMessage('利用できる学会データがありません。'); return; }
+
+  const sel = document.getElementById('conferenceSelect');
+  sel.innerHTML = '';
+  conferences.forEach(c => {
+    const o = document.createElement('option');
+    o.value = c.id; o.textContent = c.name;
+    sel.appendChild(o);
+  });
+
+  if (conferences.length === 1) { selectConference(conferences[0].id); return; }   // 選択UIは省略
+  const saved = readSavedConference();
+  if (saved && conferences.some(c => c.id === saved)) { selectConference(saved); return; }   // 前回の学会
+  sel.value = conferences[0].id;   // 前回の記録が無ければ先頭を選んだ状態で選ばせる
+  showConferencePanel();
+}
+
+function showConferencePanel() {
+  const sel = document.getElementById('conferenceSelect');
+  if (currentConferenceId) sel.value = currentConferenceId;
+  // まだ学会を開いていない間は閉じられない（選ばせる）
+  document.getElementById('conferenceCloseBtn').classList.toggle('hidden', !currentConferenceId);
+  document.getElementById('conferencePanel').classList.remove('hidden');
+}
+function hideConferencePanel() {
+  document.getElementById('conferencePanel').classList.add('hidden');
+}
+
+function updateConferenceButton() {
+  const btn = document.getElementById('currentConference');
+  if (!currentConferenceId) { btn.classList.add('hidden'); return; }
+  const multi = conferences.length > 1;
+  btn.textContent = conferenceName(currentConferenceId) + (multi ? ' ▾' : '');
+  btn.disabled = !multi;
+  btn.classList.remove('hidden');
+}
+
+// 学会を切り替えたときに、前の学会の表示を残さない
+function resetConferenceState() {
+  papers = [];
+  selectedPaperId = null;
+  jumpSignature = null;
+  document.getElementById('detailPane').innerHTML = '';
+  document.getElementById('pdfFrame').src = 'about:blank';
+  document.getElementById('pdfPaneTitle').textContent = '';
+  showPdfStatus('発表を選択するとPDFが表示されます');
+}
+
+// paperIdToOpen を渡すと、読み込み後にその発表を開く（他学会への通知クリック用）
+async function selectConference(id, paperIdToOpen) {
+  if (!conferences.some(c => c.id === id)) return;
+  const switching = id !== currentConferenceId;
+  currentConferenceId = id;
+  saveConference(id);
+  hideConferencePanel();
+  updateConferenceButton();
+  if (!switching && papers.length) {   // 同じ学会を選び直しただけ
+    if (paperIdToOpen && papers.some(p => p.paper_id === paperIdToOpen)) jumpToPaper(paperIdToOpen);
+    return;
+  }
+  resetConferenceState();
+  await loadPapers(paperIdToOpen);
+}
 
 /* ===== データ読み込み（すべてApps Script経由。ログイン済みでないと取得できない） ===== */
-async function loadPapers() {
-  document.getElementById('listPane').innerHTML =
-    '<div style="padding:20px;color:var(--ink-soft)">読み込み中...</div>';
+async function loadPapers(paperIdToOpen) {
+  const cid = currentConferenceId;
+  setListMessage('読み込み中...');
   try {
-    const data = await callBackend('listPapers', {});
+    const data = await callBackend('listPapers', { conferenceId: cid });
+    if (cid !== currentConferenceId) return;   // 取得中に別の学会へ切り替えられた
     papers = data.papers || [];
   } catch (e) {
-    document.getElementById('listPane').innerHTML =
-      '<div style="padding:20px;color:var(--ink-soft)">論文データの取得に失敗しました: ' + escapeHtml(e.message) + '</div>';
+    if (cid !== currentConferenceId) return;
+    setListMessage('論文データの取得に失敗しました: ' + e.message);
     return;
   }
   renderList();
-  if (papers.length) selectPaper(papers[0].paper_id);
+  if (paperIdToOpen && papers.some(p => p.paper_id === paperIdToOpen)) jumpToPaper(paperIdToOpen);
+  else if (papers.length) selectPaper(papers[0].paper_id);
 }
+
+document.getElementById('currentConference').onclick = showConferencePanel;
+document.getElementById('conferenceOpenBtn').onclick = () => {
+  const id = document.getElementById('conferenceSelect').value;
+  if (id) selectConference(id);
+};
+document.getElementById('conferenceCloseBtn').onclick = hideConferencePanel;
 
 /* 画像キャッシュ（同じ図を何度も取りに行かないように） */
 const imageDataUrlCache = {};
 async function fetchImageDataUrl(imgPath) {
-  if (imageDataUrlCache[imgPath]) return imageDataUrlCache[imgPath];
-  const data = await callBackend('getImage', { path: imgPath });
+  const cid = currentConferenceId, key = cid + '|' + imgPath;   // 学会ごとに別のキャッシュ
+  if (imageDataUrlCache[key]) return imageDataUrlCache[key];
+  const data = await callBackend('getImage', { conferenceId: cid, path: imgPath });
   const url = 'data:' + data.mimeType + ';base64,' + data.data;
-  imageDataUrlCache[imgPath] = url;
+  imageDataUrlCache[key] = url;
   return url;
 }
 
@@ -369,7 +517,7 @@ function selectPaper(paperId) {
   selectedPaperId = paperId;
   renderList();
   renderDetail();
-  dismissNotification(paperId);   // 見に行った発表の通知は不要になる
+  dismissNotification(currentConferenceId, paperId);   // 見に行った発表の通知は不要になる
   // 発表を選択するたびに、右カラムへ該当PDFを読み込む（取得済みならキャッシュから即表示）
   const p = papers.find(x => x.paper_id === paperId);
   if (p && p.no_summary) {   // 要約なしの枠にはPDFが無い（前の発表のPDFが残らないようにする）
@@ -460,12 +608,13 @@ function base64ToBlobUrl(b64, mime) {
 }
 
 function fetchPdfBlobUrl(paperId) {
-  if (pdfBlobUrlCache[paperId]) return Promise.resolve(pdfBlobUrlCache[paperId]);
-  if (pdfPending[paperId]) return pdfPending[paperId];
-  pdfPending[paperId] = callBackend('getPdf', { paperId })
-    .then(data => (pdfBlobUrlCache[paperId] = base64ToBlobUrl(data.data, 'application/pdf')))
-    .finally(() => { delete pdfPending[paperId]; });
-  return pdfPending[paperId];
+  const cid = currentConferenceId, key = cid + '|' + paperId;   // 学会ごとに別のキャッシュ
+  if (pdfBlobUrlCache[key]) return Promise.resolve(pdfBlobUrlCache[key]);
+  if (pdfPending[key]) return pdfPending[key];
+  pdfPending[key] = callBackend('getPdf', { conferenceId: cid, paperId })
+    .then(data => (pdfBlobUrlCache[key] = base64ToBlobUrl(data.data, 'application/pdf')))
+    .finally(() => { delete pdfPending[key]; });
+  return pdfPending[key];
 }
 
 function showPdfStatus(msg) {
@@ -478,17 +627,18 @@ function showPdfStatus(msg) {
 async function openPdfViewer(paperId, title) {
   if (!pdfVisible) return;
   const frame = document.getElementById('pdfFrame');
+  const cid = currentConferenceId;
   document.getElementById('pdfPaneTitle').textContent = title;
   showPdfStatus('PDFを読み込み中...');
   try {
     const url = await fetchPdfBlobUrl(paperId);
-    // 取得中に別の発表へ切り替えられた／PDFが隠された場合は、古い結果を描画しない
-    if (paperId !== selectedPaperId || !pdfVisible) return;
+    // 取得中に別の発表／別の学会へ切り替えられた／PDFが隠された場合は、古い結果を描画しない
+    if (cid !== currentConferenceId || paperId !== selectedPaperId || !pdfVisible) return;
     frame.src = url + '#view=FitH';
     frame.classList.remove('hidden');
     document.getElementById('pdfStatus').classList.add('hidden');
   } catch (err) {
-    if (paperId === selectedPaperId) showPdfStatus('PDFの取得に失敗しました: ' + err.message);
+    if (cid === currentConferenceId && paperId === selectedPaperId) showPdfStatus('PDFの取得に失敗しました: ' + err.message);
   }
 }
 
@@ -547,10 +697,10 @@ async function callBackend(action, payload) {
 /* ===== 自分のメモ（個人・非公開） ===== */
 async function loadMemo() {
   if (!idToken || !selectedPaperId) return;
-  const pid = selectedPaperId;
+  const pid = selectedPaperId, cid = currentConferenceId;
   try {
-    const data = await callBackend('getMemo', { paperId: pid });
-    if (pid !== selectedPaperId) return;   // 取得中に別の発表へ移った
+    const data = await callBackend('getMemo', { conferenceId: cid, paperId: pid });
+    if (pid !== selectedPaperId || cid !== currentConferenceId) return;   // 取得中に別の発表へ移った
     const textEl = document.getElementById('memoText');
     if (textEl) textEl.value = data.personal || '';
   } catch (e) { /* 未ログイン時は静かに諦める */ }
@@ -577,14 +727,14 @@ function renderComments(comments) {
 
 async function loadComments() {
   if (!idToken || !selectedPaperId) return;
-  const pid = selectedPaperId;
+  const pid = selectedPaperId, cid = currentConferenceId;
   try {
-    const data = await callBackend('getComments', { paperId: pid });
-    if (pid !== selectedPaperId) return;
+    const data = await callBackend('getComments', { conferenceId: cid, paperId: pid });
+    if (pid !== selectedPaperId || cid !== currentConferenceId) return;
     renderComments(data.comments || []);
   } catch (e) {
     const el = document.getElementById('commentList');
-    if (el && pid === selectedPaperId) el.innerHTML = '<div class="comment-empty">コメントを取得できませんでした</div>';
+    if (el && pid === selectedPaperId && cid === currentConferenceId) el.innerHTML = '<div class="comment-empty">コメントを取得できませんでした</div>';
   }
 }
 
@@ -596,19 +746,19 @@ document.addEventListener('click', async (e) => {
     btn.disabled = true; btn.textContent = '保存中…';   // 応答待ちが見えるようにする
     let label = '保存';
     try {
-      await callBackend('saveMemo', { paperId: selectedPaperId, text });
+      await callBackend('saveMemo', { conferenceId: currentConferenceId, paperId: selectedPaperId, text });
       label = '保存しました ✓';
     } catch (err) { label = '保存失敗'; alert('メモの保存に失敗しました: ' + err.message); }
     btn.disabled = false; btn.textContent = label;
     if (label !== '保存') setTimeout(() => { if (btn.isConnected && !btn.disabled) btn.textContent = '保存'; }, 2000);
   } else if (id === 'commentPostBtn') {
     const btn = e.target, input = document.getElementById('commentText');
-    const text = input.value.trim(), pid = selectedPaperId;
+    const text = input.value.trim(), pid = selectedPaperId, cid = currentConferenceId;
     if (!text || btn.disabled) return;
     btn.disabled = true;   // 二重投稿防止
     try {
-      const data = await callBackend('postComment', { paperId: pid, text });
-      if (pid === selectedPaperId) {
+      const data = await callBackend('postComment', { conferenceId: cid, paperId: pid, text });
+      if (pid === selectedPaperId && cid === currentConferenceId) {
         renderComments(data.comments || []);
         const cur = document.getElementById('commentText');
         if (cur) cur.value = '';
@@ -623,7 +773,8 @@ const MEMO_POLL_MS = 30000;
 let memoSince = null;             // 前回チェック時刻。2回目以降はサーバーが返した checkedAt を使う
 let memoPollTimer = null;
 let memoPollInFlight = false;     // 応答待ち中の二重呼び出し防止
-const notifications = new Map();  // paperId -> { paperId, displayName, count }（同じ発表は1通知にまとめる）
+const notifications = new Map();  // 'conferenceId|paperId' -> { conferenceId, paperId, displayName, count }（同じ発表は1通知にまとめる）
+const notifKey = (cid, pid) => cid + '|' + pid;
 
 function startMemoPolling() {
   if (!memoSince) memoSince = new Date().toISOString();   // 初回は「ログインした時刻」
@@ -651,11 +802,14 @@ async function pollMemoUpdates() {
 function handleMemoUpdates(updates) {
   let changed = false;
   updates.forEach(u => {
-    if (!u.paperId || u.paperId === selectedPaperId) return;   // 今見ている発表には通知しない
-    const n = notifications.get(u.paperId) || { paperId: u.paperId, displayName: '', count: 0 };
+    const cid = u.conferenceId || currentConferenceId;
+    if (!u.paperId || !cid) return;
+    if (cid === currentConferenceId && u.paperId === selectedPaperId) return;   // 今見ている発表には通知しない
+    const key = notifKey(cid, u.paperId);
+    const n = notifications.get(key) || { conferenceId: cid, paperId: u.paperId, displayName: '', count: 0 };
     n.displayName = u.displayName || n.displayName;
     n.count += 1;
-    notifications.set(u.paperId, n);
+    notifications.set(key, n);
     changed = true;
   });
   if (changed) renderNotifications();
@@ -665,11 +819,14 @@ function renderNotifications() {
   const el = document.getElementById('notificationArea');
   el.innerHTML = '';
   notifications.forEach(n => {
-    const p = papers.find(x => x.paper_id === n.paperId);
-    const text = (n.displayName || 'だれか') + 'さんが「' + (p ? p.title : n.paperId) + '」にコメントしました' +
+    const same = n.conferenceId === currentConferenceId;
+    const p = same ? papers.find(x => x.paper_id === n.paperId) : null;   // 他学会の発表は題名が手元に無い
+    const where = same ? '' : '【' + conferenceName(n.conferenceId) + '】';
+    const text = where + (n.displayName || 'だれか') + 'さんが「' + (p ? p.title : n.paperId) + '」にコメントしました' +
       (n.count > 1 ? ' 他' + (n.count - 1) + '件' : '');
     const item = document.createElement('div');
     item.className = 'notif';
+    item.dataset.conferenceId = n.conferenceId;
     item.dataset.paperId = n.paperId;
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
@@ -679,19 +836,27 @@ function renderNotifications() {
   });
 }
 
-function dismissNotification(paperId) {
-  if (notifications.delete(paperId)) renderNotifications();
+function dismissNotification(conferenceId, paperId) {
+  if (notifications.delete(notifKey(conferenceId, paperId))) renderNotifications();
+}
+
+// 通知から該当発表を開く。別の学会の通知なら、先に学会を切り替えてからその発表を開く
+function openNotification(conferenceId, paperId) {
+  if (conferenceId === currentConferenceId) { selectPaper(paperId); return; }
+  if (!conferences.some(c => c.id === conferenceId)) { dismissNotification(conferenceId, paperId); return; }
+  dismissNotification(conferenceId, paperId);
+  selectConference(conferenceId, paperId);
 }
 
 document.getElementById('notificationArea').addEventListener('click', (e) => {
   const item = e.target.closest('.notif');
   if (!item) return;
-  if (e.target.closest('.notif-close')) { dismissNotification(item.dataset.paperId); return; }
-  selectPaper(item.dataset.paperId);   // 該当発表へジャンプ（selectPaper内で通知も消える）
+  if (e.target.closest('.notif-close')) { dismissNotification(item.dataset.conferenceId, item.dataset.paperId); return; }
+  openNotification(item.dataset.conferenceId, item.dataset.paperId);   // 該当発表へジャンプ（開く時に通知も消える）
 });
 document.getElementById('notificationArea').addEventListener('keydown', (e) => {
   const item = e.target.closest('.notif');
-  if (item && e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectPaper(item.dataset.paperId); }
+  if (item && e.target === item && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openNotification(item.dataset.conferenceId, item.dataset.paperId); }
 });
 
 // タブが見えない間はポーリングを止め、戻ってきたら即1回確認してから再開する
@@ -776,8 +941,8 @@ async function onSignIn(response) {
   document.getElementById('settingsBtn').classList.remove('hidden');
   document.getElementById('chatFab').classList.remove('hidden');
 
-  // ログイン（本人確認）が済んでから、はじめて論文データを取得しにいく
-  loadPapers();
+  // ログイン（本人確認）が済んでから、まず学会の一覧を取得し、学会が決まってから論文データを取得する
+  loadConferences();
   startMemoPolling();   // 他の発表への新着コメントを30秒おきに確認
 
   try {
