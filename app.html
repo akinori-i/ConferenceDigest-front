@@ -246,6 +246,7 @@ function renderList() {
     btn.innerHTML =
       '<div class="time">' + escapeHtml(p.time) + (p.room ? '・' + escapeHtml(p.room) : '') + '</div>' +
       '<div class="title">' + escapeHtml(p.title) + '</div>' +
+      (p.no_summary ? '<div class="speaker" style="color:var(--ink-soft)">（要約なし）</div>' : '') +
       '<div class="speaker">' + escapeHtml(p.speaker) + '</div>';
     btn.onclick = () => selectPaper(p.paper_id);
     el.appendChild(btn);
@@ -371,7 +372,12 @@ function selectPaper(paperId) {
   dismissNotification(paperId);   // 見に行った発表の通知は不要になる
   // 発表を選択するたびに、右カラムへ該当PDFを読み込む（取得済みならキャッシュから即表示）
   const p = papers.find(x => x.paper_id === paperId);
-  if (p) openPdfViewer(p.paper_id, p.title);
+  if (p && p.no_summary) {   // 要約なしの枠にはPDFが無い（前の発表のPDFが残らないようにする）
+    document.getElementById('pdfPaneTitle').textContent = p.title;
+    showPdfStatus('この発表には配布PDFがありません。');
+  } else if (p) {
+    openPdfViewer(p.paper_id, p.title);
+  }
 }
 
 function renderDetail() {
@@ -386,6 +392,20 @@ function renderDetail() {
     '<div class="body" style="font-size:13px;color:var(--ink-soft);margin-top:6px">' + escapeHtml(f.reason || '') + '</div>' +
     '</div>'
   ).join('');
+
+  if (p.no_summary) {
+    el.innerHTML =
+      '<div class="card">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--accent)">' + escapeHtml(p.time) + (p.room ? '・' + escapeHtml(p.room) : '') + '</div>' +
+        '<h2 style="font-size:20px;margin-top:4px">' + escapeHtml(p.title) + '</h2>' +
+        '<div style="font-size:13px;color:var(--ink-soft);margin-top:4px">' + escapeHtml(p.speaker) + '</div>' +
+      '</div>' +
+      '<div class="card"><div class="body" style="color:var(--ink-soft)">この発表には配布PDFがないため、要約はありません。</div></div>' +
+      memoCardHtml();
+    loadMemo();
+    loadComments();
+    return;
+  }
 
   el.innerHTML =
     '<div class="card">' +
