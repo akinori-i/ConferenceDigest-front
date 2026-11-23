@@ -1037,7 +1037,8 @@ async function sendChat() {
   input.value = '';
   body.scrollTop = body.scrollHeight;
   try {
-    const data = await callBackend('ask', { question, context });
+    // context（6項目要約）はフォールバック用。サーバーが conferenceId + paperId で本文（full_text）を引ければそちらを優先する
+    const data = await callBackend('ask', { question, context, paperId: selectedPaperId, conferenceId: currentConferenceId });
     body.innerHTML += '<div class="chat-a">' + escapeHtml(data.answer) + '</div>';
   } catch (err) {
     body.innerHTML += '<div class="chat-a">エラー: ' + escapeHtml(err.message) + '</div>';
