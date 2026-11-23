@@ -85,9 +85,22 @@
   @media (min-width: 1024px) {
     #main { flex-wrap: nowrap; }
     #listPane { flex: 0 1 clamp(240px, 24vw, 340px); min-width: 220px; }
-    #detailPane { flex: 1 1 0; min-width: 300px; }
-    #pdfPane { flex: 1.15 1 0; min-width: 320px; }
+    #detailPane { flex: 1 1 0; min-width: 280px; }
+    #pdfPane { flex: 1.15 1 0; min-width: 280px; }
   }
+  /* ---- 要約パネルとPDFパネルの境界（ドラッグでリサイズ）。幅1024px以上でPDF表示中のみJSが表示する ---- */
+  /* 前後の gap(20px) を食い込むので、見た目の間隔は従来とほぼ同じ。当たり判定は ::after で左右に広げる */
+  #paneResizer { flex: 0 0 8px; margin: 0 -14px; align-self: flex-start; position: sticky; top: 16px;
+    height: calc(100vh - 90px); min-height: 360px; cursor: col-resize; touch-action: none; z-index: 3;
+    -webkit-user-select: none; user-select: none; outline: none; }
+  #paneResizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+    border-radius: 2px; background: var(--border); transition: background .15s; }
+  #paneResizer::after { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; }
+  #paneResizer:hover::before, #paneResizer:focus-visible::before, body.resizing #paneResizer::before { background: var(--accent); }
+  /* ドラッグ中: iframeがイベントを奪わないよう、全面に透明なオーバーレイを重ねる */
+  #dragShield { position: fixed; inset: 0; z-index: 60; cursor: col-resize; background: transparent; }
+  body.resizing { -webkit-user-select: none; user-select: none; cursor: col-resize; }
+  body.resizing #pdfFrame { pointer-events: none; }
   .talk-row { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border);
     border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; text-align: left;
     width: 100%; }
@@ -198,6 +211,8 @@
 <div id="main">
   <div id="listPane"><div style="padding:20px;color:var(--ink-soft)">右上の「Googleでログイン」から始めてください。</div></div>
   <div id="detailPane"></div>
+  <div id="paneResizer" class="hidden" role="separator" aria-orientation="vertical" tabindex="0"
+       aria-label="要約とPDFの幅を調整（ドラッグ、または左右キー。ダブルクリックで元に戻す）"></div>
   <!-- 右カラム: PDF常時表示エリア。旧 #pdfModal（ポップアップ）のヘッダ・iframe・閉じるボタンをここに転用した -->
   <div id="pdfPane" class="hidden">
     <div id="pdfPaneHeader">
@@ -212,6 +227,7 @@
   </div>
 </div>
 
+<div id="dragShield" class="hidden"></div>
 <div id="notificationArea" aria-live="polite"></div>
 
 <button id="chatFab" class="hidden">?</button>
@@ -644,6 +660,7 @@ async function openPdfViewer(paperId, title) {
 
 function setPdfVisible(visible) {
   pdfVisible = visible;
+  updatePaneResizer();
   document.getElementById('pdfPane').classList.toggle('hidden', !visible);
   const btn = document.getElementById('viewPdfBtn');
   if (btn) btn.textContent = visible ? 'PDFを隠す' : 'PDFを表示';
@@ -654,6 +671,121 @@ function setPdfVisible(visible) {
 // 旧 #pdfModalClose の閉じるボタンは、右カラムの「×（PDFを隠す）」に転用
 document.getElementById('pdfPaneClose').onclick = () => setPdfVisible(false);
 document.getElementById('pdfPane').classList.toggle('hidden', !pdfVisible);
+
+/* ===== 要約パネルとPDFパネルの境界ドラッグ ===== */
+// 有効なのは「幅1024px以上（PC・タブレット横向き）かつPDF表示中」だけ。
+// それ以外（スマホ・タブレット縦向き＝折り返しレイアウト、PDF非表示）では、ハンドルを隠し、
+// 幅の指定（インラインstyle）も外して、従来のCSSどおりの表示に戻す。
+const PANE_RATIO_KEY = 'conferenceDigest.pdfPaneRatio';   // PDFパネルの幅 / (要約+PDFの幅)
+const PANE_MIN_WIDTH = 280;                                // 両パネルの最小幅(px)
+const paneMql = window.matchMedia('(min-width: 1024px)');
+const paneResizer = document.getElementById('paneResizer');
+const detailPaneEl = document.getElementById('detailPane');
+const pdfPaneEl = document.getElementById('pdfPane');
+const dragShield = document.getElementById('dragShield');
+let paneRatio = null;      // null = 未設定（従来のCSS比率）
+let paneDrag = null;       // ドラッグ中の状態
+
+function readPaneRatio() {
+  try {
+    const v = parseFloat(localStorage.getItem(PANE_RATIO_KEY));
+    return v > 0.1 && v < 0.9 ? v : null;
+  } catch (e) { return null; }
+}
+function savePaneRatio(r) {
+  try {
+    if (r === null) localStorage.removeItem(PANE_RATIO_KEY);
+    else localStorage.setItem(PANE_RATIO_KEY, String(r));
+  } catch (e) { /* 保存できなくても動作に影響しない */ }
+}
+function paneResizeEnabled() { return paneMql.matches && pdfVisible; }
+
+// 比率 r を flex-grow に反映する（flex-basis 0 なので、空き幅が r : 1-r に配分される。最小幅はCSSのmin-widthが守る）
+function applyPaneRatio(r) {
+  if (r === null) { detailPaneEl.style.flex = ''; pdfPaneEl.style.flex = ''; return; }
+  detailPaneEl.style.flex = (1 - r) + ' 1 0';
+  pdfPaneEl.style.flex = r + ' 1 0';
+}
+function updatePaneResizer() {
+  const on = paneResizeEnabled();
+  paneResizer.classList.toggle('hidden', !on);
+  applyPaneRatio(on ? paneRatio : null);
+  if (!on) endPaneDrag(true);
+}
+
+function clampPaneRatio(r, total) {
+  const min = PANE_MIN_WIDTH / total;
+  return Math.min(Math.max(r, min), 1 - min);
+}
+function beginPaneDrag(clientX) {
+  if (!paneResizeEnabled()) return;
+  const dw = detailPaneEl.getBoundingClientRect().width, pw = pdfPaneEl.getBoundingClientRect().width;
+  paneDrag = { startX: clientX, startDetail: dw, total: dw + pw, moved: false };
+  document.body.classList.add('resizing');
+  dragShield.classList.remove('hidden');
+}
+function movePaneDrag(clientX) {
+  if (!paneDrag) return;
+  if (Math.abs(clientX - paneDrag.startX) > 3) paneDrag.moved = true;
+  const detail = paneDrag.startDetail + (clientX - paneDrag.startX);
+  paneRatio = clampPaneRatio(1 - detail / paneDrag.total, paneDrag.total);
+  applyPaneRatio(paneRatio);   // リアルタイムに反映
+}
+let lastPaneTap = 0;
+function resetPaneRatio() { paneRatio = null; savePaneRatio(null); applyPaneRatio(null); }
+function endPaneDrag(cancelled) {
+  if (!paneDrag) return;
+  const moved = paneDrag.moved;
+  paneDrag = null;
+  document.body.classList.remove('resizing');
+  dragShield.classList.add('hidden');
+  if (cancelled === true) return;
+  // 動かさずに離した操作が400ms以内に2回 = ダブルクリック／ダブルタップ → 初期の比率に戻す。
+  // （ドラッグ開始と同時に全面オーバーレイが出るため、ブラウザの dblclick イベントはハンドルに届かない。自前で判定する）
+  if (!moved) {
+    const now = Date.now();
+    if (now - lastPaneTap < 400) { lastPaneTap = 0; resetPaneRatio(); return; }
+    lastPaneTap = now;
+  } else lastPaneTap = 0;
+  savePaneRatio(paneRatio);
+}
+
+// マウス
+let lastPaneTouchAt = 0;   // タッチ操作の直後にブラウザが発生させる互換マウスイベントを無視するための時刻
+paneResizer.addEventListener('mousedown', (e) => {
+  if (e.button !== 0 || Date.now() - lastPaneTouchAt < 800) return;
+  e.preventDefault(); beginPaneDrag(e.clientX);
+});
+window.addEventListener('mousemove', (e) => { if (paneDrag) { e.preventDefault(); movePaneDrag(e.clientX); } });
+window.addEventListener('mouseup', () => { if (Date.now() - lastPaneTouchAt >= 800) endPaneDrag(); });
+// タッチ（ハンドルは touch-action: none なのでスクロールは始まらない。キャンセル可能なときだけ preventDefault する）
+paneResizer.addEventListener('touchstart', (e) => {
+  if (e.touches.length !== 1) return;
+  lastPaneTouchAt = Date.now();
+  if (e.cancelable) e.preventDefault();
+  beginPaneDrag(e.touches[0].clientX);
+}, { passive: false });
+window.addEventListener('touchmove', (e) => {
+  if (!paneDrag) return;
+  lastPaneTouchAt = Date.now();
+  if (e.cancelable) e.preventDefault();
+  movePaneDrag(e.touches[0].clientX);
+}, { passive: false });
+window.addEventListener('touchend', () => { if (paneDrag) { lastPaneTouchAt = Date.now(); endPaneDrag(); } });
+window.addEventListener('touchcancel', () => { lastPaneTouchAt = Date.now(); endPaneDrag(true); });
+// 操作の補助: ダブルクリック／ダブルタップで初期の比率に戻す（endPaneDragで判定）／左右キーで2%ずつ調整
+paneResizer.addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault();
+  const dw = detailPaneEl.getBoundingClientRect().width, pw = pdfPaneEl.getBoundingClientRect().width, total = dw + pw;
+  const cur = paneRatio === null ? pw / total : paneRatio;
+  paneRatio = clampPaneRatio(cur + (e.key === 'ArrowLeft' ? 0.02 : -0.02), total);
+  applyPaneRatio(paneRatio); savePaneRatio(paneRatio);
+});
+// 画面幅が1024pxをまたいだら有効／無効を切り替える（無効側ではインラインの幅指定を外す）
+(paneMql.addEventListener ? paneMql.addEventListener.bind(paneMql, 'change') : paneMql.addListener.bind(paneMql))(updatePaneResizer);
+paneRatio = readPaneRatio();
+updatePaneResizer();
 
 function section(label, text) {
   return '<div class="card section"><div class="label">' + escapeHtml(label) + '</div>' +
